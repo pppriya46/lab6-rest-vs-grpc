@@ -1,10 +1,10 @@
 # Lab 6 - REST vs gRPC results
 
-Time per operation in milliseconds. The client ran on `lab6-a` (`e2-standard-2`, `us-west1-a`) in every test, using internal IPs.
+Time per operation in milliseconds. The client always ran on one VM in us-west1-a, and I used the internal IP addresses.
 
-- **Local**: server and client both on `lab6-a`, host `localhost`, 1000 reps.
-- **Same-Zone**: server on `lab6-b` (`us-west1-a`), 1000 reps.
-- **Different Region**: server on `lab6-eu` (`europe-west3-a`, Frankfurt), 100 reps.
+- **Local**: server and client on the same VM (localhost), 1000 reps.
+- **Same-Zone**: server on a second VM in us-west1-a, 1000 reps.
+- **Different Region**: server on a VM in europe-west3-a (Frankfurt), 100 reps.
 
 |  Method 	| Local  	| Same-Zone  	|  Different Region 	|
 |---	|---	|---	|---	|
@@ -18,22 +18,22 @@ Time per operation in milliseconds. The client ran on `lab6-a` (`e2-standard-2`,
 |   gRPC jsonimg	| 18.12 	| 21.74 	| 206.0 	|
 |   PING        | 0.054 | 0.362 | 159.9 |
 
-PING is the average of 20 pings (the local one is to `localhost`).
+PING is the average of 20 pings.
 
 ## What I noticed
 
-When the client and server are close together, gRPC is faster on the small calls. A REST `add` took about 2.6-2.9 ms and a gRPC `add` about 0.7-1.0 ms, so roughly 3x. It isn't really about the network here. Going from local to same-zone only added about 0.3 ms to either one, which matches the 0.36 ms ping. The difference is the cost of each request itself: my REST client opens a brand new TCP connection for every query and Flask has to parse HTTP and JSON every time, while gRPC keeps one connection open and sends small protobuf messages.
+When the client and server are close together, gRPC is faster on the small calls. A REST add took about 2.6-2.9 ms and a gRPC add about 0.7-1.0 ms, so roughly 3 times faster. The network isn't the reason, since going from local to same-zone only added about 0.3 ms, which matches the ping. The difference is the work done for each request. REST opens a new connection for every query, while gRPC keeps one connection open and reuses it.
 
-The image calls surprised me. With low latency, gRPC was faster for `jsonimg` (18 vs 27 ms locally) but slower for `rawimg` (12 vs 5 ms locally). I didn't profile it, but my guess is that Python's protobuf and gRPC code copies and splits a 1.6 MB message, while Flask just reads the raw body in one go.
+The image results were a surprise. With low latency, gRPC was faster for jsonimg but slower for rawimg (12 ms vs 5 ms locally). I didn't dig into why, but my guess is that gRPC does more work handling one big 1.6 MB message than Flask does reading the raw image.
 
-Once the server is in Frankfurt, latency takes over completely. The ping is about 160 ms, and the results line up with round trips. REST `add` took 339 ms, which is about 2 round trips: one to open the new connection and one for the request and reply. gRPC `add` took 162 ms, about 1 round trip, because the connection was already open. That's the biggest takeaway for me: gRPC can't do better than one round trip, but REST pays for the connection setup on every single query.
+Once the server is in Frankfurt, latency takes over. The ping is about 160 ms, and the results line up with it. A REST add took 339 ms, about 2 round trips: one to open the new connection and one for the request and reply. A gRPC add took 162 ms, about 1 round trip, because its connection was already open. gRPC can't do better than one round trip, but REST pays for opening a connection on every query.
 
-The gap gets even bigger with the images. REST needed about 1.6 s for `rawimg` and `jsonimg` (roughly 10 round trips) while gRPC needed about 0.2 s. My explanation is that every REST call starts a fresh connection, so each 1.6-2 MB upload begins with a small TCP window and takes many round trips to speed up. The gRPC connection has already been used, so it can send the data much faster. I'm inferring this from the numbers and didn't measure it. `jsonimg` is also bigger on the wire than `rawimg` because base64 adds about 33%, but that mattered a lot less than the latency.
+The gap is biggest for the images. REST took about 1.6 seconds for rawimg and jsonimg, while gRPC took about 0.2 seconds. I think this is because each new REST connection starts out slow and needs many round trips to send a big image, while the gRPC connection is already warmed up. I didn't measure this, it's my explanation from the numbers.
 
-So overall: with low latency, gRPC wins on small calls and the large-image results are mixed. With high latency, gRPC is about 2x faster on small calls and about 8x faster on the large ones, mostly because it reuses its connection.
+In short, when latency is low, gRPC is better for small calls and mixed for big images. When latency is high, gRPC is about 2 times faster for small calls and about 8 times faster for big images, mostly because it reuses its connection.
 
 ## Notes
 
-- The different-region tests used 100 reps instead of 1000 so they wouldn't take forever. Every number is from a single run.
-- The gRPC client makes one untimed warm-up call so connection setup isn't counted. The REST client uses `requests.post`, which opens a new connection for each query.
-- gRPC `dotproduct` uses 32-bit floats like the handout says, so its answers differ slightly from REST's 64-bit ones.
+- The different-region tests used 100 reps instead of 1000 so they wouldn't take too long. Each number is from one run.
+- The gRPC client makes one extra call before timing starts so the connection setup isn't counted. The REST client opens a new connection for each query.
+- The gRPC dot product uses 32-bit floats like the handout says, so its answers differ slightly from REST's.
